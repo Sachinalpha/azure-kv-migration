@@ -1,0 +1,54 @@
+name: Azure KeyVault Migration
+
+on:
+  workflow_dispatch:
+
+jobs:
+  migrate:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      # Load JSON so we can extract the Service Principal from it
+      - name: Read JSON config
+        id: config
+        shell: pwsh
+        run: |
+          $json = Get-Content "./keyconfig.json" -Raw | ConvertFrom-Json
+          
+          $appId   = $json.ServicePrincipal.AppId
+          $secret  = $json.ServicePrincipal.Secret
+          $tenant  = $json.ServicePrincipal.Tenant
+
+          # Build Azure SP JSON GitHub Actions expects
+          $creds = @{
+            clientId = $appId
+            clientSecret = $secret
+            tenantId = $tenant
+            subscriptionId = $json.Target.SubscriptionId
+          } | ConvertTo-Json
+
+          $creds | Out-File "sp.json"
+
+          echo "CREDS_PATH=sp.json" | Out-File -Append -FilePath $env:GITHUB_ENV
+
+      - name: Azure Login (Dynamic SP from JSON)
+        uses: azure/login@v2
+        with:
+          creds: ${{ toJSON(steps.config.outputs) }}
+        # Use the credentials stored in sp.json
+        env:
+          AZURE_CREDENTIALS: ${{ steps.config.outputs.creds }}
+
+      - name: Install Az PowerShell Modules
+        shell: pwsh
+        run: |
+          Install-Module Az -Force -Scope CurrentUser
+
+      - name: Run migration PowerShell script
+        shell: pwsh
+        run: |
+          Write-Host "Running Key Vault migration script..."
+          pwsh ./migrate.ps1
