@@ -1,25 +1,50 @@
-# Load JSON configuration
+# Load JSON configuration from file
 $config = Get-Content -Raw -Path "./keyconfig.json" | ConvertFrom-Json
 
 foreach ($env in $config) {
 
+    # Log in using Service Principal from JSON
+    Write-Host "`nLogging in using SP from JSON..."
+    $sp = $env.ServicePrincipal
+    Connect-AzAccount `
+        -ServicePrincipal `
+        -Tenant $sp.Tenant `
+        -ApplicationId $sp.AppId `
+        -Credential (ConvertTo-SecureString $sp.Secret -AsPlainText -Force)
+
+    Write-Host "Logged in to Azure for Subscription: $($env.Target.SubscriptionId)"
+
+    # Specify the Object ID to grant access
+    $spObjectId = "b2288382-af60-408b-9389-22ea420a94d9"
+
+    # Switch to Source Subscription
     Write-Host "`nSwitching to Source Subscription: $($env.Source.SubscriptionId)"
     Set-AzContext -Subscription $env.Source.SubscriptionId
 
+    # Switch to Target Subscription
     Write-Host "`nSwitching to Target Subscription: $($env.Target.SubscriptionId)"
     Set-AzContext -Subscription $env.Target.SubscriptionId
     $tenantId = (Get-AzContext).Tenant.Id
 
-    # Prepare Key Vault parameters
-    $kvParams = @{
-        Name                = $env.Target.KeyVaultName
-        ResourceGroupName   = $env.Target.ResourceGroup
-        Location            = $env.Target.Location
-        Sku                 = $env.Target.Sku
-        EnableSoftDelete    = $true
-        EnablePurgeProtection = $false
+    # Ensure Target Resource Group exists
+    Write-Host "`nChecking target Resource Group: $($env.Target.ResourceGroup)"
+    $rg = Get-AzResourceGroup -Name $env.Target.ResourceGroup -ErrorAction SilentlyContinue
+    if (-not $rg) {
+        Write-Host "Creating Resource Group: $($env.Target.ResourceGroup)"
+        $rg = New-AzResourceGroup -Name $env.Target.ResourceGroup -Location $env.Target.Location
+    } else {
+        Write-Host "Resource Group already exists: $($env.Target.ResourceGroup)"
     }
 
+    # Prepare Key Vault parameters
+    $kvParams = @{
+        Name              = $env.Target.KeyVaultName
+        ResourceGroupName = $env.Target.ResourceGroup
+        Location          = $env.Target.Location
+        Sku               = $env.Target.Sku
+    }
+
+    # Create or get the target Key Vault
     Write-Host "`nCreating target Key Vault: $($env.Target.KeyVaultName)"
     try {
         $targetVault = New-AzKeyVault @kvParams -ErrorAction Stop
@@ -29,26 +54,23 @@ foreach ($env in $config) {
         $targetVault = Get-AzKeyVault -VaultName $env.Target.KeyVaultName -ErrorAction Stop
     }
 
+    # Grant access to the specified object ID
+    Write-Host "Setting access policy for Object ID: $spObjectId"
+    Set-AzKeyVaultAccessPolicy -VaultName $env.Target.KeyVaultName -ObjectId $spObjectId `
+        -PermissionsToSecrets get,list,set,delete `
+        -PermissionsToKeys get,list,create,delete `
+        -PermissionsToCertificates get,list,create,delete
+
     # Merge tags
     $existingTags = $targetVault.Tags
     if (-not $existingTags) { $existingTags = @{} }
-    $mergedTags = @{}
+    $mergedTags = @{ }
     foreach ($key in $existingTags.Keys) { $mergedTags[$key] = $existingTags[$key] }
     foreach ($key in $env.Tags.Keys) { $mergedTags[$key] = $env.Tags[$key] }
-
-    # Apply merged tags
     Set-AzResource -ResourceId $targetVault.ResourceId -Tag $mergedTags -Force
     Write-Host "Tags applied to $($env.Target.KeyVaultName)"
 
-    # Set access policies (example for your account)
-    $currentObjectId = (Get-AzADUser -UserPrincipalName "sachin.madalagi@dxc.com").Id
-    Set-AzKeyVaultAccessPolicy -VaultName $env.Target.KeyVaultName `
-                               -ObjectId $currentObjectId `
-                               -PermissionsToSecrets get,list,set `
-                               -PermissionsToKeys get,list,create `
-                               -PermissionsToCertificates get,list,import,delete
-
-    # Copy Secrets
+    # Copy Secrets from source KV
     Write-Host "`nCopying Secrets from $($env.Source.KeyVaultName) to $($env.Target.KeyVaultName)"
     try {
         $secrets = Get-AzKeyVaultSecret -VaultName $env.Source.KeyVaultName -ErrorAction Stop
@@ -62,7 +84,7 @@ foreach ($env in $config) {
         Write-Warning "Could not copy secrets: $_"
     }
 
-    # Copy Keys
+    # Copy Keys from source KV
     Write-Host "`nCopying Keys from $($env.Source.KeyVaultName) to $($env.Target.KeyVaultName)"
     try {
         $keys = Get-AzKeyVaultKey -VaultName $env.Source.KeyVaultName -ErrorAction Stop
@@ -74,7 +96,7 @@ foreach ($env in $config) {
         Write-Warning "Could not copy keys: $_"
     }
 
-    # Copy Certificates
+    # Copy Certificates from source KV
     Write-Host "`nCopying Certificates from $($env.Source.KeyVaultName) to $($env.Target.KeyVaultName)"
     try {
         $certs = Get-AzKeyVaultCertificate -VaultName $env.Source.KeyVaultName -ErrorAction Stop
@@ -86,20 +108,27 @@ foreach ($env in $config) {
         Write-Warning "Could not copy certificates: $_"
     }
 
-    # Handle VNet/Subnet if defined
+    # Copy VNet/Subnet if provided
     if ($env.VNet -and $env.Subnet) {
         try {
-            $vnet = Get-AzVirtualNetwork -Name $env.VNet -ResourceGroupName $env.Target.ResourceGroup
-            $subnet = Get-AzVirtualNetworkSubnetConfig -Name $env.Subnet -VirtualNetwork $vnet
-            Write-Host "VNet/Subnet found: $($env.VNet)/$($env.Subnet)"
+            # Get source VNet in source subscription
+            Set-AzContext -Subscription $env.Source.SubscriptionId
+            $sourceVnet = Get-AzVirtualNetwork -Name $env.VNet -ResourceGroupName $env.Source.ResourceGroup
+            $sourceSubnet = Get-AzVirtualNetworkSubnetConfig -Name $env.Subnet -VirtualNetwork $sourceVnet
+
+            # Switch to target subscription and create VNet/subnet
+            Set-AzContext -Subscription $env.Target.SubscriptionId
+            $targetVnet = New-AzVirtualNetwork -Name $sourceVnet.Name -ResourceGroupName $env.Target.ResourceGroup -Location $sourceVnet.Location -AddressPrefix $sourceVnet.AddressSpace.AddressPrefixes[0]
+
+            Add-AzVirtualNetworkSubnetConfig -Name $sourceSubnet.Name -AddressPrefix $sourceSubnet.AddressPrefix -VirtualNetwork $targetVnet
+            $targetVnet | Set-AzVirtualNetwork
+            Write-Host "VNet/Subnet copied successfully: $($sourceVnet.Name)/$($sourceSubnet.Name)"
         }
         catch {
-            Write-Warning "VNet/Subnet not found: $_"
+            Write-Warning "Could not copy VNet/Subnet: $_"
         }
-    }
-    else {
-        Write-Warning "VNet/Subnet info missing in JSON."
     }
 
     Write-Host "`nCopy completed for Key Vault: $($env.Target.KeyVaultName)"
 }
+
