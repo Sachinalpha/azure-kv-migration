@@ -1,0 +1,38 @@
+[{
+  "Name": "DEV",
+  "Source": {
+    "SubscriptionId": "047ae087-7d35-4c57-8fe9-7a442cc9cf16",
+    "ResourceGroup": "terraformrg-new",
+    "KeyVaultName": "sachin-kv-new"
+  },
+  "Target": {
+    "SubscriptionId": "047ae087-7d35-4c57-8fe9-7a442cc9cf16",
+    "ResourceGroup": "sachionterraformrg-2nd",
+    "Location": "WestEurope",
+    "KeyVaultName": "sachin-2nd-kv",
+	"Sku": "standard"    
+  },
+  "Tags": {
+	  "environment": "dv",
+	  "data classification": "general use",
+	  "department": "ba industrial hub",
+	  "functional owner":"sachin.madalagi@ww.com",
+	  "technical owner": "pothurilokanatha.chowdary@ww.com",
+	  "financial owner": "philip.botterill1@wwwww.com",
+	  "billing contact": "Finka.Engrani@wwwww.com",
+	  "solution type": "b2e",
+	  "cost center": "0286599701",
+	  "shared cost": "no",
+	  "network": "external",
+	  "market": "global"
+	  },   
+	"VNet":"emna-np-network-adi-euwe-001-vnt-new",
+	"Subnet":"emna-np-c-adi-euwe-001-snt-new",
+    "VNetRG":"terraformrg-new",
+	"PEP":"emna-dv-nutritionhcp360-pep-new",
+	"ServicePrincipal": {
+      "AppId": "cbde081b-6bf7-42cf-b2ed-47777688b335",
+      "Secret": "~ZI8Q~xKtBu_FbS~5Jv0_MFdrxKBZQQ-6bkFHc.Y",
+      "Tenant": "93f33571-550f-43cf-b09f-cd331338d086"
+    }
+}]
