@@ -17,5 +17,5 @@ jobs:
 
       - name: Run migration script
         shell: pwsh
-        run: pwsh ./migrate.ps1
+        run: pwsh ./migration.ps1
 
