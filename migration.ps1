@@ -44,7 +44,9 @@ foreach ($env in $config) {
     Set-AzContext -Subscription $env.Target.SubscriptionId
     $tenantId = (Get-AzContext).Tenant.Id
 
+    # ----------------------
     # Ensure Target Resource Group exists
+    # ----------------------
     Write-Host "`nChecking target Resource Group: $($env.Target.ResourceGroup)"
     $rg = Get-AzResourceGroup -Name $env.Target.ResourceGroup -ErrorAction SilentlyContinue
     if (-not $rg) {
@@ -54,22 +56,17 @@ foreach ($env in $config) {
         Write-Host "Resource Group already exists: $($env.Target.ResourceGroup)"
     }
 
-    # Prepare Key Vault parameters
-    $kvParams = @{
-        Name              = $env.Target.KeyVaultName
-        ResourceGroupName = $env.Target.ResourceGroup
-        Location          = $env.Target.Location
-        Sku               = $env.Target.Sku
-    }
-
-    # Create or get the target Key Vault
-    Write-Host "`nCreating target Key Vault: $($env.Target.KeyVaultName)"
+    # ----------------------
+    # Ensure Target Key Vault exists
+    # ----------------------
+    Write-Host "`nChecking target Key Vault: $($env.Target.KeyVaultName)"
     try {
-        $targetVault = New-AzKeyVault @kvParams -ErrorAction Stop
+        $targetVault = Get-AzKeyVault -VaultName $env.Target.KeyVaultName -ErrorAction Stop
+        Write-Host "Key Vault already exists: $($env.Target.KeyVaultName)"
     }
     catch {
-        Write-Warning "Key Vault may already exist: $_"
-        $targetVault = Get-AzKeyVault -VaultName $env.Target.KeyVaultName -ErrorAction Stop
+        Write-Host "Creating target Key Vault: $($env.Target.KeyVaultName)"
+        $targetVault = New-AzKeyVault -Name $env.Target.KeyVaultName -ResourceGroupName $env.Target.ResourceGroup -Location $env.Target.Location -Sku $env.Target.Sku
     }
 
     # Grant access to the specified object ID
@@ -83,14 +80,16 @@ foreach ($env in $config) {
     $existingTags = $targetVault.Tags
     if (-not $existingTags) { $existingTags = @{} }
 
-    $mergedTags = @{ }
+    $mergedTags = @{}
     foreach ($key in $existingTags.Keys) { $mergedTags[$key] = $existingTags[$key] }
     foreach ($key in $env.Tags.Keys) { $mergedTags[$key] = $env.Tags[$key] }
 
     Set-AzResource -ResourceId $targetVault.ResourceId -Tag $mergedTags -Force
     Write-Host "Tags applied to $($env.Target.KeyVaultName)"
 
+    # ----------------------
     # Copy Secrets
+    # ----------------------
     Write-Host "`nCopying Secrets from $($env.Source.KeyVaultName) to $($env.Target.KeyVaultName)"
     try {
         $secrets = Get-AzKeyVaultSecret -VaultName $env.Source.KeyVaultName -ErrorAction Stop
@@ -104,7 +103,9 @@ foreach ($env in $config) {
         Write-Warning "Could not copy secrets: $_"
     }
 
+    # ----------------------
     # Copy Keys
+    # ----------------------
     Write-Host "`nCopying Keys..."
     try {
         $keys = Get-AzKeyVaultKey -VaultName $env.Source.KeyVaultName -ErrorAction Stop
@@ -116,7 +117,9 @@ foreach ($env in $config) {
         Write-Warning "Could not copy keys: $_"
     }
 
+    # ----------------------
     # Copy Certificates
+    # ----------------------
     Write-Host "`nCopying Certificates..."
     try {
         $certs = Get-AzKeyVaultCertificate -VaultName $env.Source.KeyVaultName -ErrorAction Stop
@@ -128,7 +131,9 @@ foreach ($env in $config) {
         Write-Warning "Could not copy certificates: $_"
     }
 
+    # ----------------------
     # Copy VNet/Subnet
+    # ----------------------
     if ($env.VNet -and $env.Subnet) {
         try {
             # Get source VNet in source subscription
@@ -153,6 +158,7 @@ foreach ($env in $config) {
 
     Write-Host "`n=== Migration Completed for Key Vault: $($env.Target.KeyVaultName) ==="
 }
+
 
 
 
