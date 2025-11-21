@@ -44,52 +44,62 @@ foreach ($env in $config) {
     Set-AzContext -Subscription $env.Target.SubscriptionId
     $tenantId = (Get-AzContext).Tenant.Id
 
-    # ----------------------
-    # Ensure Target Resource Group exists
-    # ----------------------
+    # ---------------------------------------------------------
+    # ENSURE TARGET RESOURCE GROUP EXISTS
+    # ---------------------------------------------------------
     Write-Host "`nChecking target Resource Group: $($env.Target.ResourceGroup)"
     $rg = Get-AzResourceGroup -Name $env.Target.ResourceGroup -ErrorAction SilentlyContinue
-    if (-not $rg) {
-        Write-Host "Creating Resource Group: $($env.Target.ResourceGroup)"
+
+    if ($null -eq $rg) {
+        Write-Host "Resource Group does NOT exist. Creating: $($env.Target.ResourceGroup)"
         $rg = New-AzResourceGroup -Name $env.Target.ResourceGroup -Location $env.Target.Location
     } else {
-        Write-Host "Resource Group already exists: $($env.Target.ResourceGroup)"
+        Write-Host "✔ Resource Group EXISTS. Using existing: $($env.Target.ResourceGroup)"
     }
 
-    # ----------------------
-    # Ensure Target Key Vault exists
-    # ----------------------
+    # ---------------------------------------------------------
+    # ENSURE TARGET KEYVAULT EXISTS
+    # ---------------------------------------------------------
     Write-Host "`nChecking target Key Vault: $($env.Target.KeyVaultName)"
-    try {
-        $targetVault = Get-AzKeyVault -VaultName $env.Target.KeyVaultName -ErrorAction Stop
-        Write-Host "Key Vault already exists: $($env.Target.KeyVaultName)"
+    $targetVault = Get-AzKeyVault -VaultName $env.Target.KeyVaultName -ErrorAction SilentlyContinue
+
+    if ($null -eq $targetVault) {
+        Write-Host "Key Vault does NOT exist. Creating: $($env.Target.KeyVaultName)"
+        $targetVault = New-AzKeyVault `
+            -Name $env.Target.KeyVaultName `
+            -ResourceGroupName $env.Target.ResourceGroup `
+            -Location $env.Target.Location `
+            -Sku $env.Target.Sku
     }
-    catch {
-        Write-Host "Creating target Key Vault: $($env.Target.KeyVaultName)"
-        $targetVault = New-AzKeyVault -Name $env.Target.KeyVaultName -ResourceGroupName $env.Target.ResourceGroup -Location $env.Target.Location -Sku $env.Target.Sku
+    else {
+        Write-Host "✔ Key Vault EXISTS. Using existing: $($env.Target.KeyVaultName)"
     }
 
-    # Grant access to the specified object ID
+    # ---------------------------------------------------------
+    # APPLY ACCESS POLICY
+    # ---------------------------------------------------------
     Write-Host "Setting access policy for Object ID: $spObjectId"
     Set-AzKeyVaultAccessPolicy -VaultName $env.Target.KeyVaultName -ObjectId $spObjectId `
         -PermissionsToSecrets get,list,set,delete `
         -PermissionsToKeys get,list,create,delete `
         -PermissionsToCertificates get,list,create,delete
 
-    # Merge tags
+    # ---------------------------------------------------------
+    # MERGE TAGS
+    # ---------------------------------------------------------
     $existingTags = $targetVault.Tags
     if (-not $existingTags) { $existingTags = @{} }
 
-    $mergedTags = @{}
+    $mergedTags = @{ }
     foreach ($key in $existingTags.Keys) { $mergedTags[$key] = $existingTags[$key] }
     foreach ($key in $env.Tags.Keys) { $mergedTags[$key] = $env.Tags[$key] }
 
     Set-AzResource -ResourceId $targetVault.ResourceId -Tag $mergedTags -Force
     Write-Host "Tags applied to $($env.Target.KeyVaultName)"
 
-    # ----------------------
-    # Copy Secrets
-    # ----------------------
+    # ---------------------------------------------------------
+    # COPY SECRETS
+    # ---------------------------------------------------------
     Write-Host "`nCopying Secrets from $($env.Source.KeyVaultName) to $($env.Target.KeyVaultName)"
     try {
         $secrets = Get-AzKeyVaultSecret -VaultName $env.Source.KeyVaultName -ErrorAction Stop
@@ -103,9 +113,9 @@ foreach ($env in $config) {
         Write-Warning "Could not copy secrets: $_"
     }
 
-    # ----------------------
-    # Copy Keys
-    # ----------------------
+    # ---------------------------------------------------------
+    # COPY KEYS (MANUAL COPY WARNING)
+    # ---------------------------------------------------------
     Write-Host "`nCopying Keys..."
     try {
         $keys = Get-AzKeyVaultKey -VaultName $env.Source.KeyVaultName -ErrorAction Stop
@@ -117,9 +127,9 @@ foreach ($env in $config) {
         Write-Warning "Could not copy keys: $_"
     }
 
-    # ----------------------
-    # Copy Certificates
-    # ----------------------
+    # ---------------------------------------------------------
+    # COPY CERTIFICATES (MANUAL COPY WARNING)
+    # ---------------------------------------------------------
     Write-Host "`nCopying Certificates..."
     try {
         $certs = Get-AzKeyVaultCertificate -VaultName $env.Source.KeyVaultName -ErrorAction Stop
@@ -131,9 +141,9 @@ foreach ($env in $config) {
         Write-Warning "Could not copy certificates: $_"
     }
 
-    # ----------------------
-    # Copy VNet/Subnet
-    # ----------------------
+    # ---------------------------------------------------------
+    # COPY VNET / SUBNET
+    # ---------------------------------------------------------
     if ($env.VNet -and $env.Subnet) {
         try {
             # Get source VNet in source subscription
@@ -158,6 +168,7 @@ foreach ($env in $config) {
 
     Write-Host "`n=== Migration Completed for Key Vault: $($env.Target.KeyVaultName) ==="
 }
+
 
 
 
