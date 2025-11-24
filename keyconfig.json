@@ -7,9 +7,9 @@
   },
   "Target": {
     "SubscriptionId": "047ae087-7d35-4c57-8fe9-7a442cc9cf16",
-    "ResourceGroup": "sachionterraformrg-2nd",
+    "ResourceGroup": "sachinterraformrg-2nd",
     "Location": "WestEurope",
-    "KeyVaultName": "sachin-3rd-kv",
+    "KeyVaultName": "sachin-3-kv",
 	"Sku": "standard"    
   },
   "Tags": {
