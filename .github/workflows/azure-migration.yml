@@ -1,21 +1,145 @@
-name: Azure KeyVault Migration
+name: KeyVault Deploy and Clone
 
 on:
   workflow_dispatch:
+    inputs:
+      subscription_id:
+        required: true
+      rg_name:
+        required: true
+      vnet_name:
+        required: true
+      vnet_rg:
+        required: true
+      subnet_name:
+        required: true
+      sourceKeyVault:
+        description: Source Key Vault name
+        required: true
+
+permissions:
+  contents: read
 
 jobs:
-  migrate:
-    runs-on: windows-latest
+# =========================
+# JOB 1 : DEPLOY KEY VAULT
+# =========================
+  deploy-keyvault:
+    runs-on: ubuntu-latest
+
+    outputs:
+      target_kv: ${{ steps.tf_output.outputs.kv_name }}
+
+    env:
+      TF_VAR_client_id:       ${{ secrets.CLIENT_ID }}
+      TF_VAR_client_secret:   ${{ secrets.CLIENT_SECRET }}
+      TF_VAR_tenant_id:       ${{ secrets.TENANT_ID }}
+      TF_VAR_subscription_id: ${{ github.event.inputs.subscription_id }}
+      TF_VAR_rg_name:         ${{ github.event.inputs.rg_name }}
+      TF_VAR_vnet_name:       ${{ github.event.inputs.vnet_name }}
+      TF_VAR_vnet_rg:         ${{ github.event.inputs.vnet_rg }}
+      TF_VAR_subnet_name:     ${{ github.event.inputs.subnet_name }}
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Az PowerShell module
-        shell: pwsh
-        run: Install-Module Az -Force -Scope CurrentUser
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
 
-      - name: Run migration script
-        shell: pwsh
-        run: pwsh ./migration.ps1
+      - name: Terraform Init
+        run: cd Terraform && terraform init
 
+      - name: Terraform Apply
+        run: cd Terraform && terraform apply -auto-approve
+
+      - name: Read KeyVault Name from Terraform Output
+        id: tf_output
+        run: |
+          cd Terraform
+          echo "kv_name=$(terraform output -raw key_vault_name)" >> $GITHUB_OUTPUT
+
+# =========================
+# JOB 2 : CLONE 
+# =========================
+  clone:
+    runs-on: ubuntu-latest
+    needs: deploy-keyvault
+    environment: approval
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Az PowerShell
+        shell: pwsh
+        run: |
+          Install-Module Az -Force -AllowClobber
+
+      - name: Clone Key Vault
+        shell: pwsh
+        run: |
+          pwsh ./Scripts/test_vault.ps1 `
+            -SourceVault "${{ github.event.inputs.sourceKeyVault }}" `
+            -TargetVault "${{ needs.deploy-keyvault.outputs.target_kv }}" `
+            -AzureClientId "${{ secrets.CLIENT_ID }}" `
+            -AzureClientSecret "${{ secrets.CLIENT_SECRET }}" `
+            -AzureTenantId "${{ secrets.TENANT_ID }}" `
+            -AzureSubscriptionId "${{ github.event.inputs.subscription_id }}"
+            
+# =========================
+# JOB 3 : Test
+# =========================
+  keyvault-test:
+    runs-on: ubuntu-latest
+    needs: [deploy-keyvault,clone]
+    environment: approval
+
+    env:
+      AZURE_TENANT_ID: ${{ secrets.TENANT_ID }}
+      AZURE_CLIENT_ID: ${{ secrets.CLIENT_ID }}
+      AZURE_CLIENT_SECRET: ${{ secrets.CLIENT_SECRET }}
+      AZURE_SUBSCRIPTION_ID: ${{ github.event.inputs.subscription_id }}
+      SOURCE_KEYVAULT_NAME: ${{ github.event.inputs.sourceKeyVault }}
+      TARGET_KEYVAULT_NAME: ${{needs.deploy-keyvault.outputs.target_kv }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Install Azure CLI
+        run: |
+          curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+        shell: bash
+
+      - name: Azure Login (Service Principal)
+        run: |
+          az login --service-principal -u $AZURE_CLIENT_ID -p $AZURE_CLIENT_SECRET --tenant $AZURE_TENANT_ID
+          az account set --subscription $AZURE_SUBSCRIPTION_ID
+        shell: bash
+
+      - name: Disable Firewalls (Allow All IPs)
+        run: |
+          az keyvault update --name $SOURCE_KEYVAULT_NAME --public-network-access Enabled
+          az keyvault network-rule add --name $SOURCE_KEYVAULT_NAME --ip-address 0.0.0.0/0
+          az keyvault update --name $TARGET_KEYVAULT_NAME --public-network-access Enabled
+          az keyvault network-rule add --name $TARGET_KEYVAULT_NAME --ip-address 0.0.0.0/0
+        shell: bash
+
+      - name: Run Go Tests
+        run: go test -v ./Test_Scripts
+        shell: bash
+
+      - name: Re-enable Firewalls
+        if: always()
+        run: |
+          az keyvault network-rule remove --name $SOURCE_KEYVAULT_NAME --ip-address 0.0.0.0/0
+          az keyvault update --name $SOURCE_KEYVAULT_NAME --public-network-access Disabled
+          az keyvault network-rule remove --name $TARGET_KEYVAULT_NAME --ip-address 0.0.0.0/0
+          az keyvault update --name $TARGET_KEYVAULT_NAME --public-network-access Disabled
+        shell: bash
